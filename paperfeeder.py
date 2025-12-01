@@ -153,9 +153,11 @@ def main():
     frontmatter = f"""---
 title: "New Papers from arXiv"
 date: {canonical_date}
+canonical_date: {canonical_date}
+category: {category}
 categories: ["arXiv", "{category}"]
 tags: ["arXiv"]
-"""
+---"""
     
     md_content = frontmatter + "\n\n"
     for index, row in df.iterrows():
@@ -186,6 +188,7 @@ tags: ["arXiv"]
             logger.warning("File already exists")
         else:
             with open(filepath, "w", encoding="utf-8") as f:
+                f.write(frontmatter + "\n\n")
                 f.write("# " + category.replace('.', '_') + canonical_date + "\n\n")
 
                 for row in df.itertuples():
