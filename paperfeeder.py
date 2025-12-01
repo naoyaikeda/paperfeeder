@@ -4,8 +4,29 @@ import os
 import datetime
 from dotenv import load_dotenv
 import arxiv
+from rich import pretty, print
+from rich.console import Console
+from rich.markdown import Markdown
+import pandas as pd
 
 logger = None
+
+def to_dataframe(papers):
+    i = 1
+    data = []
+    for paper in papers:
+        data.append({
+            "No": i,
+            "Title": paper.title,
+            "Authors": ", ".join(author.name for author in paper.authors),
+            "Published": paper.published,
+            "Updated": paper.updated,
+            "Summary": paper.summary,
+            "URL": paper.entry_id,
+        })
+        i += 1
+    df = pd.DataFrame(data)
+    return df
 
 def main():
     load_dotenv()
@@ -87,9 +108,32 @@ def main():
     if not papers:
         logger.info("No new papers found in the last %d days for category %s", delta_days, category)
     else:
-        logger.info("New papers found:")
+        logger.debug("New papers found:")
         for paper in papers:
             logger.info("Title: %s, Authors: %s, Published: %s", paper.title, ", ".join(author.name for author in paper.authors), paper.published)
+
+    df = to_dataframe(papers)
+
+    canonical_date = now.strftime("%Y-%m-%d")
+    frontmatter = f"""---
+title: "New Papers from arXiv"
+date: {canonical_date}
+categories: ["arXiv", "{category}"]
+tags: ["arXiv"]
+"""
+    
+    md_content = frontmatter + "\n\n"
+    for index, row in df.iterrows():
+        md_content += f"## {row['No']}. {row['Title']}\n"
+        md_content += f"**Authors:** {row['Authors']}\n\n"
+        md_content += f"**Published:** {row['Published'].strftime('%Y-%m-%d')}\n\n"
+        md_content += f"**Updated:** {row['Updated'].strftime('%Y-%m-%d')}\n\n"
+        md_content += f"**URL:** [Link]({row['URL']})\n\n"
+        md_content += f"**Summary:**\n\n{row['Summary']}\n\n"
+        md_content += "---\n\n"
+    
+    console = Console()
+    console.print(Markdown(md_content))
 
 if __name__ == "__main__":
     main()
