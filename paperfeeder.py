@@ -8,6 +8,8 @@ from rich import pretty, print
 from rich.console import Console
 from rich.markdown import Markdown
 import pandas as pd
+from RSSInfra.Article import article
+from RSSInfra.Summarizer import sakura_summarizer, gemini_summarizer, openai_summarizer, custom_summarizer
 
 logger = None
 
@@ -40,6 +42,8 @@ def main():
     parser.add_argument("--category", type=str, default="cs.AI",)
     parser.add_argument("--max-results", type=int, default=None,
                         help="Maximum number of results to fetch from arXiv")
+    parser.add_argument("--max-items", type=int, default=20,
+                        help="Maximum number of items to include in the summary")
 
     args = parser.parse_args()
 
@@ -70,6 +74,11 @@ def main():
 
     if args.max_results:
         max_results = args.max_results
+    
+    max_items = int(os.getenv("MAX_ITEMS", 20))
+
+    if args.max_items:
+        max_items = args.max_items
 
     logger.info("Fetching papers in category: %s for the last %d days", category, delta_days)
     logger.debug("Using max results: %d", max_results)
@@ -110,9 +119,35 @@ def main():
     else:
         logger.debug("New papers found:")
         for paper in papers:
-            logger.info("Title: %s, Authors: %s, Published: %s", paper.title, ", ".join(author.name for author in paper.authors), paper.published)
+            logger.debug("Title: %s, Authors: %s, Published: %s", paper.title, ", ".join(author.name for author in paper.authors), paper.published)
 
     df = to_dataframe(papers)
+
+    summarizer = None
+
+    if papers:
+        articles = article.articlesFromDataframe(df)
+
+        summarizer_method = os.getenv("SUMMARIZE_METHOD", "gemini").lower()
+
+        logger.info("Using summarization method: %s", summarizer_method)
+
+        response = None
+
+        if summarizer_method == 'gemini':
+            summarizer = gemini_summarizer.GeminiSummarizer(None, None)
+        elif summarizer_method == 'sakura':
+            summarizer = sakura_summarizer.SakuraSummarizer(None, None)
+        elif summarizer_method == 'openai':
+            summarizer = openai_summarizer.OpenAISummarizer(None, None)
+        elif summarizer_method == 'custom':
+            summarizer = custom_summarizer.CustomSummarizer(None, None)
+
+        if summarizer:
+            response = summarizer.summarize(articles, max_items=max_items)
+        
+        if response:
+            logger.info("Summary:\n%s", response)
 
     canonical_date = now.strftime("%Y-%m-%d")
     frontmatter = f"""---
@@ -133,7 +168,40 @@ tags: ["arXiv"]
         md_content += "---\n\n"
     
     console = Console()
-    console.print(Markdown(md_content))
+
+    if response:
+        console.print(Markdown("## Summary"))
+        console.print(Markdown(response.text))
+    
+    clipping_path = os.getenv("CLIPPING_PATH", None)
+
+    if clipping_path:
+        if not os.path.exists(clipping_path):
+            os.makedirs(clipping_path)
+
+        filename = f"papers_{category.replace('.', '_')}_{canonical_date}.md"
+        filepath = os.path.join(clipping_path, filename)
+
+        if os.path.exists(filepath):
+            logger.warning("File already exists")
+        else:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write("# " + category.replace('.', '_') + canonical_date + "\n\n")
+
+                for row in df.itertuples():
+                    f.write(f"## {row.No}. {row.Title}\n")
+                    f.write(f"**Authors:** {row.Authors}\n\n")
+                    f.write(f"**Published:** {row.Published.strftime('%Y-%m-%d')}\n\n")
+                    f.write(f"**Updated:** {row.Updated.strftime('%Y-%m-%d')}\n\n")
+                    f.write(f"**URL:** [Link]({row.URL})\n\n")
+                    f.write(f"**Summary:**\n\n{row.Summary}\n\n")
+                    f.write("---\n\n")
+                
+                if response:
+                    f.write("## Summary\n\n")
+                    f.write(response.text + "\n")
+
+        logger.info("Markdown file saved to: %s", filepath)
 
 if __name__ == "__main__":
     main()
