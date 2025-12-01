@@ -153,10 +153,7 @@ def main():
     frontmatter = f"""---
 title: "New Papers from arXiv"
 date: {canonical_date}
-canonical_date: {canonical_date}
-category: {category}
-categories: ["arXiv", "{category}"]
-tags: ["arXiv"]
+tags: ["arXiv", "{category}"]
 ---"""
     
     md_content = frontmatter + "\n\n"
