@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] - 2025-12-02
+
+### Changed
+-  Refactored core logic
+
 ## [0.2.1] - 2025-12-02
 
 ### Fixed

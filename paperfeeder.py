@@ -14,8 +14,7 @@ from sqlalchemy import create_engine, MetaData, Table, Column, String, DateTime,
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import OperationalError
 
-logger = logging.getLogger("paperfeeder")
-
+logger = None
 
 def save_papers_to_db(df, category, host, port, user, password, db_name):
     """
@@ -31,25 +30,7 @@ def save_papers_to_db(df, category, host, port, user, password, db_name):
         if insp.has_table("papers"):
             columns = [c['name'] for c in insp.get_columns("papers")]
             if "id" not in columns:
-                logger.info("Migrating database schema: Adding 'id' column...")
-                with engine.connect() as conn:
-                    # Drop existing primary key (which was url)
-                    try:
-                        conn.execute(text("ALTER TABLE papers DROP PRIMARY KEY"))
-                    except Exception as e:
-                        logger.warning(f"Could not drop primary key: {e}")
-
-                    # Add id column
-                    conn.execute(text("ALTER TABLE papers ADD COLUMN id INT AUTO_INCREMENT PRIMARY KEY FIRST"))
-
-                    # Add unique constraint to url if not exists (it was PK so it is likely unique, but let's ensure)
-                    try:
-                        conn.execute(text("ALTER TABLE papers ADD UNIQUE (url)"))
-                    except Exception as e:
-                        logger.warning(f"Could not add unique constraint to url: {e}")
-
-                    conn.commit()
-                logger.info("Database migration complete.")
+                migrate_database(engine)
 
         papers_table = Table(
             'papers', metadata,
@@ -111,6 +92,27 @@ def save_papers_to_db(df, category, host, port, user, password, db_name):
         logger.error(f"An error occurred while saving papers: {e}", exc_info=True)
         raise
 
+def migrate_database(engine):
+    logger.info("Migrating database schema: Adding 'id' column...")
+    with engine.connect() as conn:
+                    # Drop existing primary key (which was url)
+        try:
+            conn.execute(text("ALTER TABLE papers DROP PRIMARY KEY"))
+        except Exception as e:
+            logger.warning(f"Could not drop primary key: {e}")
+
+                    # Add id column
+        conn.execute(text("ALTER TABLE papers ADD COLUMN id INT AUTO_INCREMENT PRIMARY KEY FIRST"))
+
+                    # Add unique constraint to url if not exists (it was PK so it is likely unique, but let's ensure)
+        try:
+            conn.execute(text("ALTER TABLE papers ADD UNIQUE (url)"))
+        except Exception as e:
+            logger.warning(f"Could not add unique constraint to url: {e}")
+
+        conn.commit()
+    logger.info("Database migration complete.")
+
 def to_dataframe(papers):
     i = 1
     data = []
@@ -127,6 +129,20 @@ def to_dataframe(papers):
         i += 1
     df = pd.DataFrame(data)
     return df
+
+def generate_content(df, frontmatter):
+    md_content = frontmatter + "\n\n"
+    for index, row in df.iterrows():
+        md_content += f"## {row['No']}. {row['Title']}\n"
+        md_content += f"**Authors:** {row['Authors']}\n\n"
+        md_content += f"**Published:** {row['Published'].strftime('%Y-%m-%d')}\n\n"
+        md_content += f"**Updated:** {row['Updated'].strftime('%Y-%m-%d')}\n\n"
+        md_content += f"**URL:** [Link]({row['URL']})\n\n"
+        md_content += f"**Summary:**\n\n{row['Summary']}\n\n"
+        md_content += "---\n\n"
+
+    return md_content
+
 
 def main():
     load_dotenv()
@@ -190,6 +206,102 @@ def main():
     logger.debug("Using max results: %d", max_results)
 
     now = datetime.datetime.utcnow()
+    papers = execute_query(category, delta_days, max_results, now)
+
+    logger.info("Found %d papers", len(papers))
+
+    if not papers:
+        logger.info("No new papers found in the last %d days for category %s", delta_days, category)
+    else:
+        logger.debug("New papers found:")
+        for paper in papers:
+            logger.debug("Title: %s, Authors: %s, Published: %s", paper.title, ", ".join(author.name for author in paper.authors), paper.published)
+
+    df = to_dataframe(papers)
+
+    if args.save and papers:
+        save_papers_to_db(df, category, db_host, db_port, db_user, db_password, db_name)
+
+    summarizer = None
+
+    if papers:
+        response = do_summarize(max_items, df)
+
+    canonical_date = now.strftime("%Y-%m-%d")
+    frontmatter = f"""---
+title: "New Papers from arXiv"
+date: {canonical_date}
+tags: ["arXiv", "{category.replace('.', '-')}"]
+---"""
+
+    console = Console()
+
+    if response:
+        console.print(Markdown("## Summary"))
+        console.print(Markdown(response.text))
+    
+    clipping_path = os.getenv("CLIPPING_PATH", None)
+
+    if clipping_path:
+        export_clip(category, df, response, canonical_date, frontmatter, clipping_path)
+    
+    return
+
+def export_clip(category, df, response, canonical_date, frontmatter, clipping_path):
+    if not os.path.exists(clipping_path):
+        os.makedirs(clipping_path)
+
+    filename = f"papers_{category.replace('.', '_')}_{canonical_date}.md"
+    filepath = os.path.join(clipping_path, filename)
+
+    if os.path.exists(filepath):
+        logger.warning("File already exists")
+    else:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(frontmatter + "\n\n")
+            f.write("# " + category.replace('.', '_') + canonical_date + "\n\n")
+
+            for row in df.itertuples():
+                f.write(f"## {row.No}. {row.Title}\n")
+                f.write(f"**Authors:** {row.Authors}\n\n")
+                f.write(f"**Published:** {row.Published.strftime('%Y-%m-%d')}\n\n")
+                f.write(f"**Updated:** {row.Updated.strftime('%Y-%m-%d')}\n\n")
+                f.write(f"**URL:** [Link]({row.URL})\n\n")
+                f.write(f"**Summary:**\n\n{row.Summary}\n\n")
+                f.write("---\n\n")
+                
+            if response:
+                f.write("## Summary\n\n")
+                f.write(response.text + "\n")
+
+    logger.info("Markdown file saved to: %s", filepath)
+
+def do_summarize(max_items, df):
+    articles = article.articlesFromDataframe(df)
+
+    summarizer_method = os.getenv("SUMMARIZE_METHOD", "gemini").lower()
+
+    logger.info("Using summarization method: %s", summarizer_method)
+
+    response = None
+
+    if summarizer_method == 'gemini':
+        summarizer = gemini_summarizer.GeminiSummarizer(None, None)
+    elif summarizer_method == 'sakura':
+        summarizer = sakura_summarizer.SakuraSummarizer(None, None)
+    elif summarizer_method == 'openai':
+        summarizer = openai_summarizer.OpenAISummarizer(None, None)
+    elif summarizer_method == 'custom':
+        summarizer = custom_summarizer.CustomSummarizer(None, None)
+
+    if summarizer:
+        response = summarizer.summarize(articles, max_items=max_items)
+        
+    if response:
+        logger.info("Summary:\n%s", response)
+    return response
+
+def execute_query(category, delta_days, max_results, now):
     start_date = now - datetime.timedelta(days=delta_days)
 
     logger.info("Papers from %s to %s", start_date.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d"))
@@ -217,100 +329,7 @@ def main():
     logger.info("Executing search...")
     results = client.results(search)
     papers = list(results)
-
-    logger.info("Found %d papers", len(papers))
-
-    if not papers:
-        logger.info("No new papers found in the last %d days for category %s", delta_days, category)
-    else:
-        logger.debug("New papers found:")
-        for paper in papers:
-            logger.debug("Title: %s, Authors: %s, Published: %s", paper.title, ", ".join(author.name for author in paper.authors), paper.published)
-
-    df = to_dataframe(papers)
-
-    if args.save and papers:
-        save_papers_to_db(df, category, db_host, db_port, db_user, db_password, db_name)
-
-    summarizer = None
-
-    if papers:
-        articles = article.articlesFromDataframe(df)
-
-        summarizer_method = os.getenv("SUMMARIZE_METHOD", "gemini").lower()
-
-        logger.info("Using summarization method: %s", summarizer_method)
-
-        response = None
-
-        if summarizer_method == 'gemini':
-            summarizer = gemini_summarizer.GeminiSummarizer(None, None)
-        elif summarizer_method == 'sakura':
-            summarizer = sakura_summarizer.SakuraSummarizer(None, None)
-        elif summarizer_method == 'openai':
-            summarizer = openai_summarizer.OpenAISummarizer(None, None)
-        elif summarizer_method == 'custom':
-            summarizer = custom_summarizer.CustomSummarizer(None, None)
-
-        if summarizer:
-            response = summarizer.summarize(articles, max_items=max_items)
-        
-        if response:
-            logger.info("Summary:\n%s", response)
-
-    canonical_date = now.strftime("%Y-%m-%d")
-    frontmatter = f"""---
-title: "New Papers from arXiv"
-date: {canonical_date}
-tags: ["arXiv", "{category.replace('.', '-')}"]
----"""
-    
-    md_content = frontmatter + "\n\n"
-    for index, row in df.iterrows():
-        md_content += f"## {row['No']}. {row['Title']}\n"
-        md_content += f"**Authors:** {row['Authors']}\n\n"
-        md_content += f"**Published:** {row['Published'].strftime('%Y-%m-%d')}\n\n"
-        md_content += f"**Updated:** {row['Updated'].strftime('%Y-%m-%d')}\n\n"
-        md_content += f"**URL:** [Link]({row['URL']})\n\n"
-        md_content += f"**Summary:**\n\n{row['Summary']}\n\n"
-        md_content += "---\n\n"
-    
-    console = Console()
-
-    if response:
-        console.print(Markdown("## Summary"))
-        console.print(Markdown(response.text))
-    
-    clipping_path = os.getenv("CLIPPING_PATH", None)
-
-    if clipping_path:
-        if not os.path.exists(clipping_path):
-            os.makedirs(clipping_path)
-
-        filename = f"papers_{category.replace('.', '_')}_{canonical_date}.md"
-        filepath = os.path.join(clipping_path, filename)
-
-        if os.path.exists(filepath):
-            logger.warning("File already exists")
-        else:
-            with open(filepath, "w", encoding="utf-8") as f:
-                f.write(frontmatter + "\n\n")
-                f.write("# " + category.replace('.', '_') + canonical_date + "\n\n")
-
-                for row in df.itertuples():
-                    f.write(f"## {row.No}. {row.Title}\n")
-                    f.write(f"**Authors:** {row.Authors}\n\n")
-                    f.write(f"**Published:** {row.Published.strftime('%Y-%m-%d')}\n\n")
-                    f.write(f"**Updated:** {row.Updated.strftime('%Y-%m-%d')}\n\n")
-                    f.write(f"**URL:** [Link]({row.URL})\n\n")
-                    f.write(f"**Summary:**\n\n{row.Summary}\n\n")
-                    f.write("---\n\n")
-                
-                if response:
-                    f.write("## Summary\n\n")
-                    f.write(response.text + "\n")
-
-        logger.info("Markdown file saved to: %s", filepath)
+    return papers
 
 if __name__ == "__main__":
     main()
