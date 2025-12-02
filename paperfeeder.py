@@ -10,8 +10,80 @@ from rich.markdown import Markdown
 import pandas as pd
 from RSSInfra.Article import article
 from RSSInfra.Summarizer import sakura_summarizer, gemini_summarizer, openai_summarizer, custom_summarizer
+from sqlalchemy import create_engine, MetaData, Table, Column, String, DateTime, Text
+from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.exc import OperationalError
 
 logger = None
+
+
+def save_papers_to_db(df, category, host, port, user, password, db_name):
+    """
+    Saves the given DataFrame of papers to the specified database using SQLAlchemy.
+    """
+    db_url = f"mysql+pymysql://{user}:{password}@{host}:{port}/{db_name}"
+    try:
+        engine = create_engine(db_url)
+        metadata = MetaData()
+
+        papers_table = Table(
+            'papers', metadata,
+            Column('url', String(255), primary_key=True),
+            Column('title', String(512)),
+            Column('authors', Text),
+            Column('published', DateTime),
+            Column('updated', DateTime),
+            Column('summary', Text),
+            Column('category', String(255))
+        )
+        
+        metadata.create_all(engine, checkfirst=True)
+
+        df_for_db = df.drop(columns=['No']).rename(columns={
+            'Title': 'title',
+            'Authors': 'authors',
+            'Published': 'published',
+            'Updated': 'updated',
+            'Summary': 'summary',
+            'URL': 'url'
+        })
+
+        df_for_db['published'] = df_for_db['published'].dt.tz_localize(None)
+        df_for_db['updated'] = df_for_db['updated'].dt.tz_localize(None)
+        
+        papers_to_insert = df_for_db.to_dict('records')
+
+        for paper in papers_to_insert:
+            paper['category'] = category
+
+        if not papers_to_insert:
+            logger.info("No papers to save.")
+            return
+
+        stmt = mysql_insert(papers_table).values(papers_to_insert)
+        
+        update_stmt = stmt.on_duplicate_key_update(
+            updated=stmt.inserted.updated,
+            published=stmt.inserted.published,
+            summary=stmt.inserted.summary,
+            category=stmt.inserted.category,
+            title=stmt.inserted.title,
+            authors=stmt.inserted.authors
+        )
+
+        with engine.connect() as conn:
+            conn.execute(update_stmt)
+            conn.commit()
+            
+        logger.info("Saved %d papers to the database", len(df))
+
+    except OperationalError as e:
+        logger.error(f"Database connection failed: {e}", exc_info=True)
+        print(f"Error: Could not connect to the database at {host}:{port}. Please check your database credentials and network connection.")
+        raise
+    except Exception as e:
+        logger.error(f"An error occurred while saving papers: {e}", exc_info=True)
+        raise
 
 def to_dataframe(papers):
     i = 1
@@ -44,6 +116,14 @@ def main():
                         help="Maximum number of results to fetch from arXiv")
     parser.add_argument("--max-items", type=int, default=20,
                         help="Maximum number of items to include in the summary")
+    parser.add_argument("--save", action="store_true", default=False,
+                        help="Save the fetched papers to the database")
+
+    db_host = os.getenv("DB_HOST", "localhost")
+    db_port = int(os.getenv("DB_PORT", "3306"))
+    db_user = os.getenv("DB_USER", "root")
+    db_password = os.getenv("DB_PASSWORD", "")
+    db_name = os.getenv("DB_NAME", "paperfeeder")
 
     args = parser.parse_args()
 
@@ -123,6 +203,9 @@ def main():
 
     df = to_dataframe(papers)
 
+    if args.save and papers:
+        save_papers_to_db(df, category, db_host, db_port, db_user, db_password, db_name)
+
     summarizer = None
 
     if papers:
@@ -153,7 +236,7 @@ def main():
     frontmatter = f"""---
 title: "New Papers from arXiv"
 date: {canonical_date}
-tags: ["arXiv", "{category}"]
+tags: ["arXiv", "{category.replace('.', '-')}"]
 ---"""
     
     md_content = frontmatter + "\n\n"
