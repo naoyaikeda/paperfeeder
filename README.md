@@ -13,6 +13,7 @@ PaperFeeder is an automated tool designed to fetch the latest academic papers fr
 - **Rich Output**: Displays formatted results in the console.
 - **Markdown Reports**: Generates comprehensive Markdown files containing paper details and generated summaries.
 - **Configurable**: Easily customizable via command-line arguments and environment variables.
+- **Database Storage**: Saves fetched papers to a MySQL database with automatic schema migration (adds `id` column if missing).
 
 ## Requirements
 
