@@ -12,6 +12,9 @@ dependencies = [
     "langchain-core>=1.1.0",
     "langchain-google-genai>=3.2.0",
     "langchain-openai>=1.1.0",
+    "mysql-connector-python>=9.5.0",
     "pandas>=2.3.3",
+    "pymysql>=1.1.2",
     "rich>=14.2.0",
+    "sqlalchemy>=2.0.44",
 ]
