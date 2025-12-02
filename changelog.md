@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- `--save` flag to enable saving fetched papers to a MySQL database.
+- Database connection settings can be configured via environment variables (`DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`).
+
+### Changed
+- Refactored database logic to use SQLAlchemy for more robust and maintainable code, replacing the previous `mysql.connector` implementation.
+- The `save_papers_to_db` function now performs an "upsert" (INSERT ... ON DUPLICATE KEY UPDATE) to add new papers or update existing ones.
+- The database table schema is now managed within the script and the `papers` table is created automatically if it doesn't exist.
+
+### Fixed
+- Corrected a database schema error where the primary key on the `url` column was too long for some MySQL configurations.
+- Fixed a `CompileError` caused by an extra "No" column in the data being sent to the database.
+- Resolved a database error by converting timezone-aware `datetime` objects from the arXiv API to timezone-naive ones compatible with MySQL's `DATETIME` type.
+
 ## [0.1.0] - 2024-05-24
 
 ### Added
