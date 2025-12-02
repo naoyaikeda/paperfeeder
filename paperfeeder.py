@@ -10,11 +10,11 @@ from rich.markdown import Markdown
 import pandas as pd
 from RSSInfra.Article import article
 from RSSInfra.Summarizer import sakura_summarizer, gemini_summarizer, openai_summarizer, custom_summarizer
-from sqlalchemy import create_engine, MetaData, Table, Column, String, DateTime, Text
+from sqlalchemy import create_engine, MetaData, Table, Column, String, DateTime, Text, Integer, inspect, text
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import OperationalError
 
-logger = None
+logger = logging.getLogger("paperfeeder")
 
 
 def save_papers_to_db(df, category, host, port, user, password, db_name):
@@ -26,9 +26,35 @@ def save_papers_to_db(df, category, host, port, user, password, db_name):
         engine = create_engine(db_url)
         metadata = MetaData()
 
+        # Check if migration is needed
+        insp = inspect(engine)
+        if insp.has_table("papers"):
+            columns = [c['name'] for c in insp.get_columns("papers")]
+            if "id" not in columns:
+                logger.info("Migrating database schema: Adding 'id' column...")
+                with engine.connect() as conn:
+                    # Drop existing primary key (which was url)
+                    try:
+                        conn.execute(text("ALTER TABLE papers DROP PRIMARY KEY"))
+                    except Exception as e:
+                        logger.warning(f"Could not drop primary key: {e}")
+
+                    # Add id column
+                    conn.execute(text("ALTER TABLE papers ADD COLUMN id INT AUTO_INCREMENT PRIMARY KEY FIRST"))
+
+                    # Add unique constraint to url if not exists (it was PK so it is likely unique, but let's ensure)
+                    try:
+                        conn.execute(text("ALTER TABLE papers ADD UNIQUE (url)"))
+                    except Exception as e:
+                        logger.warning(f"Could not add unique constraint to url: {e}")
+
+                    conn.commit()
+                logger.info("Database migration complete.")
+
         papers_table = Table(
             'papers', metadata,
-            Column('url', String(255), primary_key=True),
+            Column('id', Integer, primary_key=True, autoincrement=True),
+            Column('url', String(255), unique=True),
             Column('title', String(512)),
             Column('authors', Text),
             Column('published', DateTime),

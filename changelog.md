@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file.
 - Refactored database logic to use SQLAlchemy for more robust and maintainable code, replacing the previous `mysql.connector` implementation.
 - The `save_papers_to_db` function now performs an "upsert" (INSERT ... ON DUPLICATE KEY UPDATE) to add new papers or update existing ones.
 - The database table schema is now managed within the script and the `papers` table is created automatically if it doesn't exist.
+- Updated database schema to use an auto-incrementing `id` as the primary key. Existing `papers` tables will be automatically migrated to include the `id` column, and the `url` column will become a unique key.
 
 ### Fixed
 - Corrected a database schema error where the primary key on the `url` column was too long for some MySQL configurations.
