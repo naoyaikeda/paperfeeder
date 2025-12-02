@@ -2,7 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.2.1] - 2025-12-02
+
+### Fixed
+- Implemented a feature to replace the “.” in categories used for tags with “-”.
+
+## [Unreleased] - 2025-12-02
 
 ### Added
 - `--save` flag to enable saving fetched papers to a MySQL database.
@@ -18,7 +23,7 @@ All notable changes to this project will be documented in this file.
 - Fixed a `CompileError` caused by an extra "No" column in the data being sent to the database.
 - Resolved a database error by converting timezone-aware `datetime` objects from the arXiv API to timezone-naive ones compatible with MySQL's `DATETIME` type.
 
-## [0.1.0] - 2024-05-24
+## [0.1.0] - 2025-12-01
 
 ### Added
 - Initial release of PaperFeeder.
